@@ -1,0 +1,76 @@
+name: ⬆️ Upstream Fork Sync
+
+permissions:
+  contents: write
+
+on:
+  schedule:
+    - cron: "0 2 * * *"  # 每天 UTC+0 02:00（北京时间 10:00）自动同步
+  workflow_dispatch:
+    inputs:
+      sync_test_mode:
+        description: '是否启用测试模式（仅模拟同步，不推送）'
+        type: boolean
+        default: false
+
+env:
+  DEFAULT_SYNC_BRANCH: main                       # 默认分支（可通过 secret 覆盖）
+  UPSTREAM_SYNC_REPO: palxiao/poster-design   # ✅ 上游仓库（提取为全局变量）
+  UPSTREAM_SYNC_BRANCH: main                      # 上游分支
+
+jobs:
+  sync-upstream:
+    name: 🔄 同步上游仓库
+    if: ${{ github.event.repository.fork }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🧾 初始化仓库信息
+        id: repo-info
+        run: |
+          echo "当前仓库名：${{ github.repository }}"
+          echo "默认分支为：${{ secrets.MY_TARGET_SYNC_BRANCH || env.DEFAULT_SYNC_BRANCH }}"
+          echo "上游源为：${{ env.UPSTREAM_SYNC_REPO }}@${{ env.UPSTREAM_SYNC_BRANCH }}"
+          echo "是否为测试模式：${{ inputs.sync_test_mode }}"
+          echo "SYNC_BRANCH=${{ secrets.MY_TARGET_SYNC_BRANCH || env.DEFAULT_SYNC_BRANCH }}" >> "$GITHUB_ENV"
+
+      - name: 📥 检出当前仓库
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ secrets.MY_TARGET_SYNC_BRANCH || env.DEFAULT_SYNC_BRANCH }}
+          persist-credentials: false
+
+      - name: 🔁 执行同步
+        id: sync
+        uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.1
+        with:
+          target_sync_branch: ${{ secrets.MY_TARGET_SYNC_BRANCH || env.DEFAULT_SYNC_BRANCH }}
+          upstream_sync_repo: ${{ env.UPSTREAM_SYNC_REPO }}         # ✅ 使用统一变量
+          upstream_sync_branch: ${{ env.UPSTREAM_SYNC_BRANCH }}     # ✅ 使用统一变量
+          target_repo_token: ${{ secrets.GITHUB_TOKEN }}
+          test_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.sync_test_mode || false }}
+
+      - name: ✅ 显示同步结果
+        run: |
+          if [[ "${{ steps.sync.outputs.has_new_commits }}" == "true" ]]; then
+            echo "✅ 已同步，有新提交已合并至 ${{ env.SYNC_BRANCH }}"
+          else
+            echo "ℹ️ 无需同步，上游没有新提交。"
+          fi
+
+      - name: 🚨 同步失败处理
+        if: failure()
+        run: |
+          echo "❌ 同步失败，可能原因如下："
+          echo "- GitHub Actions 因 workflow 文件被修改而暂停运行"
+          echo "- GITHUB_TOKEN 权限失效或 fork 仓库无写权限"
+          echo "- 上游仓库不可达，或网络错误"
+          echo "🔧 建议：手动执行 Sync Fork 或检查 Actions 状态页"
+          echo "👉 参考：https://docs.github.com/en/actions/monitoring-and-troubleshooting-workflows"
+
+      # 📨 可选通知
+      # - name: 📬 Notify via webhook
+      #   if: steps.sync.outputs.has_new_commits == 'true'
+      #   run: |
+      #     curl -X POST -H "Content-Type: application/json" \
+      #     -d '{"msg": "同步成功：有新提交！"}' https://your-notification-endpoint
